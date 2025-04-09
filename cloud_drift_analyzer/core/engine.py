@@ -1,9 +1,11 @@
 from typing import List, Optional
 from datetime import datetime
+from sqlalchemy.ext.asyncio import AsyncSession
 from .models import DriftResult, ResourceState, DriftType
 from ..providers.base import BaseProvider
 from ..state_adapters.base import BaseStateAdapter
 from .logging import get_logger, log_duration, LogContext
+from ..db import crud
 
 logger = get_logger(__name__)
 
@@ -14,11 +16,13 @@ class DriftEngine:
         self,
         provider: BaseProvider,
         state_adapter: BaseStateAdapter,
-        environment: str
+        environment: str,
+        session: AsyncSession
     ):
         self.provider = provider
         self.state_adapter = state_adapter
         self.environment = environment
+        self.session = session
         logger.info("drift_engine_initialized",
                    environment=environment,
                    provider_type=type(provider).__name__,
@@ -33,6 +37,14 @@ class DriftEngine:
         
         with log_duration(logger, "drift_analysis") as log:
             try:
+                # Create initial drift scan record
+                drift_scan = await crud.create_drift_scan(
+                    session=self.session,
+                    provider=self.provider.__class__.__name__,
+                    iac_type=self.state_adapter.__class__.__name__,
+                    environment=self.environment
+                )
+                
                 # Get expected state from IaC
                 logger.info("fetching_expected_state")
                 expected_resources = await self.state_adapter.get_resources()
@@ -50,10 +62,22 @@ class DriftEngine:
                         actual = self._find_matching_resource(expected, actual_resources)
                         if not actual:
                             logger.warning("resource_missing")
-                            results.append(self._create_missing_result(expected))
+                            drift_result = self._create_missing_result(expected)
+                            results.append(drift_result)
+                            await crud.create_resource_drift(
+                                session=self.session,
+                                scan_id=str(drift_scan.id),
+                                drift_result=drift_result
+                            )
                         elif not self._states_match(expected, actual):
                             logger.warning("resource_changed")
-                            results.append(self._create_changed_result(expected, actual))
+                            drift_result = self._create_changed_result(expected, actual)
+                            results.append(drift_result)
+                            await crud.create_resource_drift(
+                                session=self.session,
+                                scan_id=str(drift_scan.id),
+                                drift_result=drift_result
+                            )
                             
                 # Check for extra resources
                 for actual in actual_resources:
@@ -61,7 +85,22 @@ class DriftEngine:
                                   resource_type=actual.resource_type):
                         if not self._find_matching_resource(actual, expected_resources):
                             logger.warning("unexpected_resource")
-                            results.append(self._create_extra_result(actual))
+                            drift_result = self._create_extra_result(actual)
+                            results.append(drift_result)
+                            await crud.create_resource_drift(
+                                session=self.session,
+                                scan_id=str(drift_scan.id),
+                                drift_result=drift_result
+                            )
+                
+                # Update drift scan with final results
+                await crud.update_drift_scan(
+                    session=self.session,
+                    scan_id=str(drift_scan.id),
+                    total_resources=len(expected_resources),
+                    drift_detected=len(results) > 0,
+                    status="completed"
+                )
                 
                 logger.info("drift_analysis_complete",
                            total_resources=len(expected_resources),
@@ -73,6 +112,16 @@ class DriftEngine:
                            })
                             
             except Exception as e:
+                # Update drift scan with error status if something went wrong
+                if 'drift_scan' in locals():
+                    await crud.update_drift_scan(
+                        session=self.session,
+                        scan_id=str(drift_scan.id),
+                        total_resources=0,
+                        drift_detected=False,
+                        status="failed",
+                        error_message=str(e)
+                    )
                 logger.error("drift_analysis_failed", error=str(e))
                 raise
                 

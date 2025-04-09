@@ -2,7 +2,7 @@
 name = "cloud-drift-analyzer"
 version = "0.1.0"
 description = "A tool for analyzing infrastructure drift between IaC and cloud providers"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Ron Levi <ronkeldude@gmail.com>"]
 readme = "README.md"
 packages = [{include = "cloud_drift_analyzer"}]
 

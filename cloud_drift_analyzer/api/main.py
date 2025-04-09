@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, Response
-from fastapi.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime
 from typing import Callable
 import uuid

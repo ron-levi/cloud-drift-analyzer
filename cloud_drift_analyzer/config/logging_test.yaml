@@ -1,0 +1,40 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  json:
+    (): structlog.processors.JSONRenderer
+
+handlers:
+  null:
+    class: logging.NullHandler
+  
+  memory:
+    class: logging.handlers.MemoryHandler
+    formatter: json
+    capacity: 1000
+    target: null
+
+root:
+  level: CRITICAL
+  handlers: [null]
+
+loggers:
+  cloud_drift_analyzer:
+    level: ERROR
+    handlers: [memory]
+    propagate: false
+  
+  cloud_drift_analyzer.tests:
+    level: DEBUG
+    handlers: [memory]
+    propagate: false
+
+processors:
+  - structlog.processors.add_log_level
+  - structlog.processors.TimeStamper(fmt="iso", utc=True)
+  - structlog.processors.StackInfoRenderer
+  - structlog.processors.format_exc_info
+  - structlog.processors.UnicodeDecoder
+  - structlog.contextvars.merge_contextvars
+  - structlog.processors.dict_tracebacks

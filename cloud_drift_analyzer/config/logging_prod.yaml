@@ -1,0 +1,65 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  json:
+    (): structlog.processors.JSONRenderer
+
+handlers:
+  file:
+    class: logging.handlers.TimedRotatingFileHandler
+    formatter: json
+    filename: /var/log/cloud-drift/cloud-drift.log
+    when: midnight
+    interval: 1
+    backupCount: 30
+    encoding: utf8
+  
+  error_file:
+    class: logging.handlers.TimedRotatingFileHandler
+    formatter: json
+    filename: /var/log/cloud-drift/error.log
+    when: midnight
+    interval: 1
+    backupCount: 30
+    encoding: utf8
+    level: ERROR
+
+root:
+  level: INFO
+  handlers: [file, error_file]
+
+loggers:
+  cloud_drift_analyzer:
+    level: INFO
+    handlers: [file, error_file]
+    propagate: false
+  
+  cloud_drift_analyzer.providers:
+    level: INFO
+    handlers: [file, error_file]
+    propagate: false
+
+  cloud_drift_analyzer.state_adapters:
+    level: INFO
+    handlers: [file, error_file]
+    propagate: false
+
+  botocore:
+    level: WARNING
+    handlers: [file]
+    propagate: false
+
+  urllib3:
+    level: WARNING
+    handlers: [file]
+    propagate: false
+
+processors:
+  - structlog.processors.add_log_level
+  - structlog.processors.TimeStamper(fmt="iso", utc=True)
+  - structlog.processors.StackInfoRenderer
+  - structlog.processors.format_exc_info
+  - structlog.processors.UnicodeDecoder
+  - structlog.contextvars.merge_contextvars
+  - structlog.processors.dict_tracebacks

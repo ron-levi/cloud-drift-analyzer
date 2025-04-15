@@ -3,10 +3,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, List
 from datetime import datetime
 
-from ...core.logging import get_logger, log_duration, LogContext
-from ...db.database import get_session
-from ...db import crud
-from ...core.models import DriftResult
+from cloud_drift_analyzer.core.logging import get_logger, log_duration, LogContext
+from cloud_drift_analyzer.db.database import get_session
+from cloud_drift_analyzer.db import crud
+from cloud_drift_analyzer.core.models import DriftResult
+from cloud_drift_analyzer.db.models import User
+from cloud_drift_analyzer.api.routes.auth import get_current_user_from_token
 
 logger = get_logger(__name__)
 
@@ -19,6 +21,7 @@ router = APIRouter(
 @router.get("/")
 async def get_drift_analysis(
     session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),  # Add auth
     environment: str = "production",
     since: datetime | None = None
 ):
@@ -27,7 +30,10 @@ async def get_drift_analysis(
     """
     try:
         with log_duration(logger, "get_drift_analysis") as log:
-            with LogContext(environment=environment):
+            with LogContext(
+                environment=environment,
+                user_id=str(current_user.id)
+            ):
                 logger.info("fetching_drift_results", 
                           since=since.isoformat() if since else None)
                 
@@ -58,6 +64,7 @@ async def get_drift_analysis(
 @router.post("/scan")
 async def start_drift_scan(
     session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),  # Add auth
     environment: str = "production"
 ):
     """
@@ -65,7 +72,10 @@ async def start_drift_scan(
     """
     try:
         with log_duration(logger, "start_drift_scan") as log:
-            with LogContext(environment=environment):
+            with LogContext(
+                environment=environment,
+                user_id=str(current_user.id)
+            ):
                 logger.info("creating_drift_scan")
                 
                 # Create new scan record
@@ -85,7 +95,7 @@ async def start_drift_scan(
                 }
                 
     except Exception as e:
-        logger.error("drift_scan_creation_failed", error=str(e))
+        logger.error("drift_scan_failed", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

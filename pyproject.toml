@@ -30,7 +30,8 @@ typer = "^0.9"
 structlog = "^24.1"
 deepdiff = "^6.7.1"
 aiosqlite = "^0.19.0"
-python-jwt = "^4.1.0"  # Added for OIDC token validation
+PyJWT = "^2.8.0"  # Added PyJWT for OIDC token validation
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}  # Added for password hashing
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

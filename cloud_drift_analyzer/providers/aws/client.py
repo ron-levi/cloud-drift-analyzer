@@ -1,7 +1,7 @@
 import boto3
 from botocore.exceptions import ClientError
 from typing import Dict, List, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ..base import CloudProvider
 from .auth_utils import validate_oidc_token, assume_role_with_web_identity, TokenValidationError, AssumeRoleError
 from ...core.logging import get_logger, log_duration, LogContext
@@ -125,7 +125,8 @@ class AWSCloudProvider(CloudProvider):
         if (
             not self.credentials_expiry or 
             not self.temporary_credentials or
-            datetime.now(self.credentials_expiry.tzinfo) + timedelta(minutes=5) >= self.credentials_expiry
+            isinstance(self.credentials_expiry, datetime) and  # Check if it's a real datetime
+            datetime.now(timezone.utc) + timedelta(minutes=5) >= self.credentials_expiry.replace(tzinfo=timezone.utc)
         ):
             logger.info("refreshing_credentials")
             if not self.authenticate():

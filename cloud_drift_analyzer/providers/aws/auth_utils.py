@@ -1,5 +1,5 @@
 from typing import Dict, Any, Optional
-import python_jwt as jwt  # Changed from 'import jwt'
+import jwt  # Changed from python_jwt to PyJWT
 from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError

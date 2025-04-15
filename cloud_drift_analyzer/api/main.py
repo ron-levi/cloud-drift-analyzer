@@ -5,8 +5,8 @@ from typing import Callable
 import uuid
 import json
 
-from .routes import drift, health
-from ..core.logging import get_logger, LogContext, configure_logging
+from cloud_drift_analyzer.api.routes import drift, health, auth
+from cloud_drift_analyzer.core.logging import get_logger, LogContext, configure_logging
 
 logger = get_logger(__name__)
 
@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
     
     # Include routers
     app.include_router(health.router, tags=["health"])
+    app.include_router(auth.router, prefix="/api/v1")  # Added auth router
     app.include_router(drift.router, prefix="/api/v1")
     
     logger.info("api_application_initialized")

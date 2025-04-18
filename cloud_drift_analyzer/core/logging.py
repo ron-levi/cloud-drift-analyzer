@@ -50,10 +50,7 @@ def configure_logging(
     else:
         # Console formatting
         processors.extend([
-            structlog.dev.ConsoleRenderer(
-                colors=True,
-                exception_formatter=structlog.dev.DefaultExceptionFormatter()
-            )
+            structlog.dev.ConsoleRenderer(colors=True)
         ])
     
     structlog.configure(

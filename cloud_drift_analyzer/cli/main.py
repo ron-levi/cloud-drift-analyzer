@@ -14,7 +14,7 @@ console = Console()
 logger = get_logger(__name__)
 
 @app.callback()
-def init(
+async def init(
     log_level: str = typer.Option(
         "INFO",
         "--log-level",
@@ -46,7 +46,7 @@ def init(
                 log_file=log_file)
 
 @app.command()
-def get_terraform_state(
+async def get_terraform_state(
     path: str = typer.Argument(
         ...,
         help="Path to a .tfstate file or directory containing .tf files"
@@ -70,7 +70,7 @@ def get_terraform_state(
                 adapter = TerraformStateAdapter(path)
                 
                 logger.info("fetching_resources")
-                resources = asyncio.run(adapter.get_resources())
+                resources = await adapter.get_resources()
                 logger.info("resources_fetched", count=len(resources))
                 
                 if format == "json":
@@ -109,7 +109,7 @@ def get_terraform_state(
             raise typer.Exit(1)
 
 @app.command()
-def analyze_drift(
+async def analyze_drift(
     state_path: str = typer.Argument(
         ...,
         help="Path to IaC state file or directory"
@@ -128,26 +128,58 @@ def analyze_drift(
         False,
         "--notify",
         help="Send notifications if drift is detected"
-    )
+    ),
 ):
     """Analyze infrastructure drift between IaC and cloud resources."""
     with LogContext(
         command="analyze_drift",
         state_path=state_path,
         provider=provider,
-        environment=environment
+        environment=environment,
     ):
         try:
             with log_duration(logger, "drift_analysis"):
                 logger.info("starting_drift_analysis")
-                # TODO: Implement drift analysis command
-                logger.warning("drift_analysis_not_implemented")
-                console.print("[yellow]Drift analysis not yet implemented[/yellow]")
-                
+
+                # Instantiate provider and state adapter based on input
+                if provider == "aws":
+                    from ..providers.aws.client import AWSCloudProvider
+                    provider_instance = AWSCloudProvider()  # Add session if needed
+                else:
+                    console.print(f"[red]Provider {provider} not supported[/red]")
+                    raise typer.Exit(1)
+
+                if state_path.endswith(".tfstate"):
+                    adapter = TerraformStateAdapter(state_path)
+                else:
+                    console.print(f"[red]State path {state_path} not supported[/red]")
+                    raise typer.Exit(1)
+
+                from ..db.database import get_session
+                from ..core.engine import DriftEngine
+                async with get_session() as session:
+                    engine = DriftEngine(
+                        provider=provider_instance,
+                        state_adapter=adapter,
+                        environment=environment,
+                        session=session
+                    )
+                    
+                    drift_results = await engine.analyze_drift()
+
+                    if drift_results:
+                        console.print("[red]Drift detected![/red]")
+                        for result in drift_results:
+                            console.print(f"  - {result.drift_type}: {result.resource.resource_type} - {result.resource.resource_id}")
+                    else:
+                        console.print("[green]No drift detected.[/green]")
+
         except Exception as e:
             logger.error("command_failed", error=str(e))
             console.print(f"[red]Error: {str(e)}[/red]")
             raise typer.Exit(1)
 
 if __name__ == "__main__":
-    app()
+    async def main():
+        await app()
+    asyncio.run(main())

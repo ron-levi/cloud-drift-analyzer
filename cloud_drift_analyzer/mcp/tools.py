@@ -161,27 +161,33 @@ class OptimizeCostsTool(Tool[CostOptimizationInput, CostOptimizationOutput]):
             name="optimize_costs",
             description="Fetches recent cost breakdowns and identifies major spenders with reduction tips"
         )
-    
+        self._cloud_provider = None
+
     async def execute(self, input_data: CostOptimizationInput) -> CostOptimizationOutput:
         try:
-            # In a real implementation, this would connect to AWS Cost Explorer or similar services
-            # For now, we'll mock the cost analysis logic
-            
             # Parse time range
             time_range = self._parse_time_range(input_data.time_range)
             
             # Get costs with filters
-            costs_data = await self._get_costs(time_range, input_data.filters)
+            filters = {}
+            if input_data.filters:
+                if input_data.filters.service:
+                    filters['Services'] = input_data.filters.service
+                if input_data.filters.tag:
+                    filters['Tags'] = [{'Key': k, 'Values': [v]} for k, v in input_data.filters.tag.items()]
+
+            costs_data = await self._cloud_provider.get_resource_costs(
+                start_date=time_range['start'],
+                end_date=time_range['end'],
+                filters=filters if filters else None
+            )
             
-            # Generate recommendations
-            recommendations = self._generate_cost_recommendations(costs_data)
+            # Generate recommendations based on cost data
+            recommendations = self._generate_recommendations(costs_data)
             
             return CostOptimizationOutput(
-                total_cost=sum(service["cost"] for service in costs_data["services"]),
-                top_services=[
-                    ServiceCost(name=service["name"], cost=service["cost"])
-                    for service in costs_data["services"]
-                ],
+                total_cost=costs_data['total_cost'],
+                top_services=self._get_top_services(costs_data),
                 recommendations=recommendations
             )
             
@@ -194,63 +200,93 @@ class OptimizeCostsTool(Tool[CostOptimizationInput, CostOptimizationOutput]):
                 raise ValueError("InsufficientPermissionsError: Missing permissions to access cost data")
             else:
                 raise ValueError(f"Error during cost optimization: {str(e)}")
-    
-    def _parse_time_range(self, time_range: str) -> Dict[str, str]:
-        """Parse time range string into start and end dates."""
-        now = datetime.now()
-        
-        if time_range == "last_30_days":
-            return {"start": (now - datetime.timedelta(days=30)).isoformat(), "end": now.isoformat()}
-        elif time_range == "last_7_days":
-            return {"start": (now - datetime.timedelta(days=7)).isoformat(), "end": now.isoformat()}
-        elif time_range == "last_90_days":
-            return {"start": (now - datetime.timedelta(days=90)).isoformat(), "end": now.isoformat()}
-        elif time_range == "month_to_date":
-            return {"start": datetime(now.year, now.month, 1).isoformat(), "end": now.isoformat()}
-        else:
-            raise ValueError(f"Invalid time range: {time_range}")
-    
-    async def _get_costs(self, time_range: Dict[str, str], filters: Optional[CostFilterInput]) -> Dict[str, Any]:
-        """Get cost data for the specified time range and filters."""
-        # Mock implementation - in production this would call Cloud provider APIs
-        return {
-            "services": [
-                {"name": "Amazon EC2", "cost": 2432.12, "idle_resources": 3},
-                {"name": "AWS Lambda", "cost": 781.90, "cold_starts": 5000},
-                {"name": "Amazon S3", "cost": 432.45, "redundant_data": True},
-                {"name": "Amazon RDS", "cost": 477.30, "overprovisioned": True}
-            ],
-            "regions": {
-                "us-east-1": 3100.50,
-                "us-west-2": 1023.27
-            },
-            "trend": "increasing"
-        }
-    
-    def _generate_cost_recommendations(self, costs_data: Dict[str, Any]) -> List[str]:
+
+    def _get_top_services(self, costs_data: Dict[str, Any]) -> List[ServiceCost]:
+        """Convert cost data into ServiceCost objects."""
+        return [
+            ServiceCost(name=service['name'], cost=service['cost'])
+            for service in costs_data['services']
+        ]
+
+    def _generate_recommendations(self, costs_data: Dict[str, Any]) -> List[str]:
         """Generate cost optimization recommendations based on cost data."""
         recommendations = []
         
-        # EC2 recommendations
-        ec2_data = next((s for s in costs_data["services"] if s["name"] == "Amazon EC2"), None)
-        if ec2_data and ec2_data.get("idle_resources", 0) > 0:
-            recommendations.append(f"EC2: {ec2_data['idle_resources']} idle instances running in us-east-1a")
-        
-        # Lambda recommendations
-        lambda_data = next((s for s in costs_data["services"] if s["name"] == "AWS Lambda"), None)
-        if lambda_data and lambda_data.get("cold_starts", 0) > 1000:
-            recommendations.append(f"Lambda: Consider moving to reserved concurrency for function XYZ")
-        
-        # S3 recommendations
-        s3_data = next((s for s in costs_data["services"] if s["name"] == "Amazon S3"), None)
-        if s3_data and s3_data.get("redundant_data", False):
-            recommendations.append("S3: Implement lifecycle rules to archive or delete old data")
-        
-        # RDS recommendations
-        rds_data = next((s for s in costs_data["services"] if s["name"] == "Amazon RDS"), None)
-        if rds_data and rds_data.get("overprovisioned", False):
-            recommendations.append("RDS: Consider rightsizing database instances based on utilization")
-        
+        # Analyze service costs
+        for service in costs_data['services']:
+            service_name = service['name']
+            service_cost = service['cost']
+            usage_types = costs_data['usage_types'].get(service_name, {})
+            
+            # EC2 recommendations
+            if 'Amazon EC2' in service_name:
+                if any('BoxUsage' in usage_type for usage_type in usage_types):
+                    recommendations.append(
+                        "Consider using Reserved Instances or Savings Plans for consistent EC2 usage"
+                    )
+                if any('IdleInstance' in usage_type for usage_type in usage_types):
+                    recommendations.append(
+                        "Identify and terminate idle EC2 instances to reduce costs"
+                    )
+                    
+            # S3 recommendations
+            elif 'Amazon S3' in service_name:
+                if any('StandardStorage' in usage_type for usage_type in usage_types):
+                    recommendations.append(
+                        "Implement S3 lifecycle policies to move infrequently accessed data to cheaper storage tiers"
+                    )
+                    
+            # RDS recommendations
+            elif 'Amazon RDS' in service_name:
+                if service_cost > 1000:  # Arbitrary threshold
+                    recommendations.append(
+                        "Consider using RDS Reserved Instances for significant database cost savings"
+                    )
+                    
+            # Lambda recommendations
+            elif 'AWS Lambda' in service_name:
+                if any('GB-Second' in usage_type for usage_type in usage_types):
+                    recommendations.append(
+                        "Optimize Lambda function memory settings and execution time to reduce costs"
+                    )
+                    
+            # EKS recommendations
+            elif 'Amazon EKS' in service_name:
+                recommendations.append(
+                    "Review Kubernetes cluster capacity and consider using Spot Instances for non-critical workloads"
+                )
+                
+            # CloudFront recommendations
+            elif 'Amazon CloudFront' in service_name:
+                recommendations.append(
+                    "Analyze CloudFront usage patterns and optimize cache behaviors to reduce origin requests"
+                )
+                
+            # ElastiCache recommendations
+            elif 'Amazon ElastiCache' in service_name:
+                recommendations.append(
+                    "Review ElastiCache node types and consider using reserved nodes for consistent workloads"
+                )
+
+        # Add general recommendations based on total cost
+        if costs_data['total_cost'] > 10000:  # Arbitrary threshold
+            recommendations.append(
+                "Enable AWS Cost Explorer rightsizing recommendations for detailed optimization insights"
+            )
+            recommendations.append(
+                "Consider using AWS Organizations for better cost allocation and management"
+            )
+
+        # Analyze cost trends
+        daily_costs = costs_data.get('daily_costs', [])
+        if len(daily_costs) > 1:
+            first_cost = daily_costs[0]['cost']
+            last_cost = daily_costs[-1]['cost']
+            if last_cost > first_cost * 1.2:  # 20% increase
+                recommendations.append(
+                    "Investigate recent cost increases and set up AWS Budgets for better cost control"
+                )
+
         return recommendations
 
 

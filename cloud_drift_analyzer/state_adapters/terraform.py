@@ -2,6 +2,8 @@ import json
 import os
 from typing import List, Dict, Any
 import subprocess
+import glob
+from datetime import datetime
 
 from .base import BaseStateAdapter
 from ..core.models import ResourceState
@@ -21,16 +23,130 @@ class TerraformStateAdapter(BaseStateAdapter):
         """Get resources from Terraform state."""
         with log_duration(logger, "get_terraform_resources"):
             try:
+                # Validate state file/directory before proceeding
+                if not await self.validate_state_file():
+                    raise ValueError("Invalid or corrupted Terraform state")
+
                 state_data = await self._get_state_data()
                 resources = self._parse_state_data(state_data)
                 logger.info("terraform_resources_parsed", 
                           count=len(resources))
                 return resources
+            except json.JSONDecodeError as e:
+                logger.error("terraform_state_parse_failed", 
+                           error=str(e))
+                raise ValueError(f"Invalid JSON in Terraform state: {str(e)}")
+            except subprocess.CalledProcessError as e:
+                logger.error("terraform_command_failed",
+                           error=str(e))
+                raise RuntimeError(f"Terraform command failed: {str(e)}")
             except Exception as e:
                 logger.error("terraform_resource_fetch_failed", 
                            error=str(e))
                 raise
-        
+
+    async def validate_state_file(self) -> bool:
+        """Validate the Terraform state file format."""
+        try:
+            if os.path.isfile(self.state_path) and self.state_path.endswith('.tfstate'):
+                with open(self.state_path, 'r') as f:
+                    state_data = json.load(f)
+                
+                # Validate required fields
+                required_fields = ['version', 'terraform_version', 'serial', 'lineage', 'resources']
+                missing_fields = [field for field in required_fields if field not in state_data]
+                
+                if missing_fields:
+                    logger.error("invalid_state_file", 
+                               missing_fields=missing_fields)
+                    return False
+                
+                # Validate version compatibility
+                if state_data['version'] not in [3, 4]:  # Current supported versions
+                    logger.error("unsupported_state_version",
+                               version=state_data['version'])
+                    return False
+                
+                return True
+                
+            elif os.path.isdir(self.state_path):
+                # Check for terraform init capability
+                if not os.path.exists(os.path.join(self.state_path, '.terraform')):
+                    result = subprocess.run(
+                        ['terraform', 'init', '-backend=false'],
+                        cwd=self.state_path,
+                        capture_output=True,
+                        text=True
+                    )
+                    if result.returncode != 0:
+                        logger.error("terraform_init_failed",
+                                   error=result.stderr)
+                        return False
+                
+                # Verify terraform files exist
+                tf_files = glob.glob(os.path.join(self.state_path, '*.tf'))
+                if not tf_files:
+                    logger.error("no_terraform_files_found",
+                               path=self.state_path)
+                    return False
+                
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error("state_validation_failed", 
+                        error=str(e))
+            return False
+
+    async def get_state_metadata(self) -> Dict[str, Any]:
+        """Get metadata about the state file."""
+        try:
+            if os.path.isfile(self.state_path) and self.state_path.endswith('.tfstate'):
+                with open(self.state_path, 'r') as f:
+                    state_data = json.load(f)
+                return {
+                    'version': state_data.get('version'),
+                    'terraform_version': state_data.get('terraform_version'),
+                    'serial': state_data.get('serial'),
+                    'lineage': state_data.get('lineage'),
+                    'backend': state_data.get('backend', {}),
+                    'resource_count': len(state_data.get('resources', [])),
+                    'last_modified': datetime.fromtimestamp(os.path.getmtime(self.state_path)).isoformat()
+                }
+            elif os.path.isdir(self.state_path):
+                # Get workspace info
+                workspace_cmd = subprocess.run(
+                    ['terraform', 'workspace', 'show'],
+                    cwd=self.state_path,
+                    capture_output=True,
+                    text=True
+                )
+                
+                # Get backend config
+                config_files = glob.glob(os.path.join(self.state_path, '*.tf'))
+                backend_config = {}
+                for file in config_files:
+                    with open(file, 'r') as f:
+                        content = f.read()
+                        if 'backend' in content:
+                            backend_config['file'] = os.path.basename(file)
+                            break
+                
+                return {
+                    'workspace': workspace_cmd.stdout.strip() if workspace_cmd.returncode == 0 else 'default',
+                    'backend_config': backend_config,
+                    'config_files': [os.path.basename(f) for f in config_files],
+                    'last_modified': datetime.fromtimestamp(max(os.path.getmtime(f) for f in config_files)).isoformat()
+                }
+                
+            raise ValueError(f"Invalid state path: {self.state_path}")
+            
+        except Exception as e:
+            logger.error("metadata_fetch_failed", 
+                        error=str(e))
+            raise
+
     async def _get_state_data(self) -> Dict[str, Any]:
         """Get Terraform state data from file or by running terraform show."""
         if os.path.isfile(self.state_path) and self.state_path.endswith('.tfstate'):

@@ -24,7 +24,11 @@ class AWSCloudProvider(CloudProvider):
         'database': 'rds',
         'network': 'vpc',
         'lambda': 'lambda',
-        'iam': 'iam'
+        'iam': 'iam',
+        'eks': 'eks',
+        'elb': 'elbv2',
+        'cloudfront': 'cloudfront',
+        'elasticache': 'elasticache'
     }
 
     def __init__(self, credentials: Dict[str, Any]):
@@ -143,87 +147,297 @@ class AWSCloudProvider(CloudProvider):
             logger.error("not_authenticated")
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        await self._refresh_credentials_if_needed() # Ensure credentials are fresh
-
+        await self._refresh_credentials_if_needed()
         resources: List[ResourceState] = []
 
         with log_duration(logger, "get_aws_resources"):
-            # Fetch EC2 instances
-            if 'vm' in self.get_resource_types():
-                with LogContext(resource_type="ec2"):
-                    try:
-                        logger.debug("fetching_ec2_instances")
-                        async with self.session.client('ec2') as ec2_client:
-                            response = await ec2_client.describe_instances()
-                            for reservation in response['Reservations']:
-                                for instance in reservation['Instances']:
-                                    resource_id = instance['InstanceId']
-                                    properties = {
-                                        'InstanceType': instance['InstanceType'],
-                                        'State': instance['State']['Name'],
-                                        'PublicIpAddress': instance.get('PublicIpAddress', None)
-                                    }
-                                    resources.append(ResourceState(
-                                        resource_id=resource_id,
-                                        resource_type='vm',
-                                        provider='aws',
-                                        properties=properties
-                                    ))
-                            logger.info("ec2_instances_fetched", count=len(resources)) # Adjusted count logic
-                    except Exception as e:
-                        logger.error("ec2_fetch_failed", error=str(e))
+            try:
+                # Fetch EC2 instances
+                resources.extend(await self._get_ec2_resources())
+                
+                # Fetch S3 buckets
+                resources.extend(await self._get_s3_resources())
+                
+                # Fetch RDS instances
+                resources.extend(await self._get_rds_resources())
+                
+                # Fetch Lambda functions
+                resources.extend(await self._get_lambda_resources())
+                
+                # Fetch EKS clusters
+                resources.extend(await self._get_eks_resources())
+                
+                # Fetch Load Balancers
+                resources.extend(await self._get_elb_resources())
+                
+                # Fetch CloudFront distributions
+                resources.extend(await self._get_cloudfront_resources())
+                
+                # Fetch ElastiCache clusters
+                resources.extend(await self._get_elasticache_resources())
 
-            # Fetch S3 buckets
-            if 'storage' in self.get_resource_types():
-                with LogContext(resource_type="s3"):
-                    try:
-                        logger.debug("fetching_s3_buckets")
-                        async with self.session.client('s3') as s3_client:
-                            response = await s3_client.list_buckets()
-                            s3_count = 0
-                            for bucket in response['Buckets']:
-                                resource_id = bucket['Name']
-                                properties = {
-                                    'CreationDate': bucket['CreationDate'].isoformat()
-                                }
-                                resources.append(ResourceState(
-                                    resource_id=resource_id,
-                                    resource_type='storage',
-                                    provider='aws',
-                                    properties=properties
-                                ))
-                                s3_count += 1
-                            logger.info("s3_buckets_fetched", count=s3_count)
-                    except Exception as e:
-                        logger.error("s3_fetch_failed", error=str(e))
+                logger.info("aws_resources_fetched", total_count=len(resources))
+                return resources
 
-            # Fetch RDS instances
-            if 'database' in self.get_resource_types():
-                with LogContext(resource_type="rds"):
-                    try:
-                        logger.debug("fetching_rds_instances")
-                        async with self.session.client('rds') as rds_client:
-                            response = await rds_client.describe_db_instances()
-                            rds_count = 0
-                            for instance in response['DBInstances']:
-                                resource_id = instance['DBInstanceIdentifier']
-                                properties = {
-                                    'Engine': instance['Engine'],
-                                    'DBInstanceClass': instance['DBInstanceClass'],
-                                    'DBInstanceStatus': instance['DBInstanceStatus']
-                                }
-                                resources.append(ResourceState(
-                                    resource_id=resource_id,
-                                    resource_type='database',
-                                    provider='aws',
-                                    properties=properties
-                                ))
-                                rds_count += 1
-                            logger.info("rds_instances_fetched", count=rds_count)
-                    except Exception as e:
-                        logger.error("rds_fetch_failed", error=str(e))
+            except Exception as e:
+                logger.error("resource_fetch_failed", error=str(e))
+                raise
 
+    async def _get_ec2_resources(self) -> List[ResourceState]:
+        """Fetch EC2 instances and related resources."""
+        resources = []
+        async with self.session.client('ec2') as ec2:
+            # Get instances
+            response = await ec2.describe_instances()
+            for reservation in response['Reservations']:
+                for instance in reservation['Instances']:
+                    resources.append(ResourceState(
+                        resource_id=instance['InstanceId'],
+                        resource_type='vm',
+                        provider='aws',
+                        properties={
+                            'InstanceType': instance['InstanceType'],
+                            'State': instance['State']['Name'],
+                            'LaunchTime': instance['LaunchTime'].isoformat(),
+                            'PublicIpAddress': instance.get('PublicIpAddress'),
+                            'PrivateIpAddress': instance.get('PrivateIpAddress'),
+                            'Tags': {t['Key']: t['Value'] for t in instance.get('Tags', [])}
+                        }
+                    ))
         return resources
+
+    async def _get_s3_resources(self) -> List[ResourceState]:
+        """Fetch S3 buckets and their properties."""
+        resources = []
+        async with self.session.client('s3') as s3:
+            response = await s3.list_buckets()
+            for bucket in response['Buckets']:
+                # Get bucket location
+                location = await s3.get_bucket_location(Bucket=bucket['Name'])
+                
+                resources.append(ResourceState(
+                    resource_id=bucket['Name'],
+                    resource_type='storage',
+                    provider='aws',
+                    properties={
+                        'CreationDate': bucket['CreationDate'].isoformat(),
+                        'Region': location.get('LocationConstraint', 'us-east-1'),
+                        'VersioningEnabled': await self._get_bucket_versioning(s3, bucket['Name'])
+                    }
+                ))
+        return resources
+
+    async def _get_rds_resources(self) -> List[ResourceState]:
+        """Fetch RDS database instances."""
+        resources = []
+        async with self.session.client('rds') as rds:
+            response = await rds.describe_db_instances()
+            for instance in response['DBInstances']:
+                resources.append(ResourceState(
+                    resource_id=instance['DBInstanceIdentifier'],
+                    resource_type='database',
+                    provider='aws',
+                    properties={
+                        'Engine': instance['Engine'],
+                        'EngineVersion': instance['EngineVersion'],
+                        'DBInstanceClass': instance['DBInstanceClass'],
+                        'MultiAZ': instance['MultiAZ'],
+                        'StorageType': instance['StorageType'],
+                        'AllocatedStorage': instance['AllocatedStorage']
+                    }
+                ))
+        return resources
+
+    async def _get_lambda_resources(self) -> List[ResourceState]:
+        """Fetch Lambda functions."""
+        resources = []
+        async with self.session.client('lambda') as lambda_client:
+            paginator = lambda_client.get_paginator('list_functions')
+            async for page in paginator.paginate():
+                for function in page['Functions']:
+                    resources.append(ResourceState(
+                        resource_id=function['FunctionName'],
+                        resource_type='lambda',
+                        provider='aws',
+                        properties={
+                            'Runtime': function['Runtime'],
+                            'Memory': function['MemorySize'],
+                            'Timeout': function['Timeout'],
+                            'LastModified': function['LastModified'],
+                            'Handler': function['Handler']
+                        }
+                    ))
+        return resources
+
+    async def _get_eks_resources(self) -> List[ResourceState]:
+        """Fetch EKS clusters."""
+        resources = []
+        async with self.session.client('eks') as eks:
+            paginator = eks.get_paginator('list_clusters')
+            async for page in paginator.paginate():
+                for cluster_name in page['clusters']:
+                    cluster = await eks.describe_cluster(name=cluster_name)
+                    resources.append(ResourceState(
+                        resource_id=cluster_name,
+                        resource_type='eks',
+                        provider='aws',
+                        properties={
+                            'Status': cluster['cluster']['status'],
+                            'Version': cluster['cluster']['version'],
+                            'PlatformVersion': cluster['cluster']['platformVersion'],
+                            'VpcId': cluster['cluster']['resourcesVpcConfig']['vpcId']
+                        }
+                    ))
+        return resources
+
+    async def _get_elb_resources(self) -> List[ResourceState]:
+        """Fetch Elastic Load Balancers."""
+        resources = []
+        async with self.session.client('elbv2') as elb:
+            response = await elb.describe_load_balancers()
+            for lb in response['LoadBalancers']:
+                resources.append(ResourceState(
+                    resource_id=lb['LoadBalancerArn'],
+                    resource_type='elb',
+                    provider='aws',
+                    properties={
+                        'Type': lb['Type'],
+                        'Scheme': lb['Scheme'],
+                        'State': lb['State']['Code'],
+                        'DNSName': lb['DNSName'],
+                        'CreatedTime': lb['CreatedTime'].isoformat()
+                    }
+                ))
+        return resources
+
+    async def _get_cloudfront_resources(self) -> List[ResourceState]:
+        """Fetch CloudFront distributions."""
+        resources = []
+        async with self.session.client('cloudfront') as cloudfront:
+            response = await cloudfront.list_distributions()
+            for distribution in response.get('DistributionList', {}).get('Items', []):
+                resources.append(ResourceState(
+                    resource_id=distribution['Id'],
+                    resource_type='cloudfront',
+                    provider='aws',
+                    properties={
+                        'Status': distribution['Status'],
+                        'DomainName': distribution['DomainName'],
+                        'Enabled': distribution['Enabled'],
+                        'LastModified': distribution['LastModifiedTime'].isoformat()
+                    }
+                ))
+        return resources
+
+    async def _get_elasticache_resources(self) -> List[ResourceState]:
+        """Fetch ElastiCache clusters."""
+        resources = []
+        async with self.session.client('elasticache') as elasticache:
+            response = await elasticache.describe_cache_clusters()
+            for cluster in response['CacheClusters']:
+                resources.append(ResourceState(
+                    resource_id=cluster['CacheClusterId'],
+                    resource_type='elasticache',
+                    provider='aws',
+                    properties={
+                        'Engine': cluster['Engine'],
+                        'EngineVersion': cluster['EngineVersion'],
+                        'CacheNodeType': cluster['CacheNodeType'],
+                        'NumCacheNodes': cluster['NumCacheNodes'],
+                        'Status': cluster['CacheClusterStatus']
+                    }
+                ))
+        return resources
+
+    async def get_resource_costs(self, start_date: str, end_date: str, filters: Optional[Dict] = None) -> Dict[str, Any]:
+        """Get cost and usage data for resources."""
+        if not self.session:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        await self._refresh_credentials_if_needed()
+
+        try:
+            async with self.session.client('ce') as ce:
+                params = {
+                    'TimePeriod': {
+                        'Start': start_date,
+                        'End': end_date
+                    },
+                    'Granularity': 'DAILY',
+                    'Metrics': ['UnblendedCost'],
+                    'GroupBy': [
+                        {'Type': 'DIMENSION', 'Key': 'SERVICE'},
+                        {'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}
+                    ]
+                }
+
+                if filters:
+                    params['Filter'] = filters
+
+                response = await ce.get_cost_and_usage(**params)
+                
+                return self._process_cost_data(response)
+
+        except Exception as e:
+            logger.error("cost_data_fetch_failed", error=str(e))
+            raise
+
+    def _process_cost_data(self, cost_response: Dict[str, Any]) -> Dict[str, Any]:
+        """Process and structure the cost data response."""
+        processed_data = {
+            'total_cost': 0.0,
+            'services': [],
+            'daily_costs': [],
+            'usage_types': {}
+        }
+
+        for result in cost_response['ResultsByTime']:
+            daily_cost = 0.0
+            for group in result['Groups']:
+                service = group['Keys'][0]
+                usage_type = group['Keys'][1]
+                cost = float(group['Metrics']['UnblendedCost']['Amount'])
+                
+                daily_cost += cost
+                processed_data['total_cost'] += cost
+
+                # Update service costs
+                service_entry = next(
+                    (s for s in processed_data['services'] if s['name'] == service),
+                    None
+                )
+                if service_entry:
+                    service_entry['cost'] += cost
+                else:
+                    processed_data['services'].append({
+                        'name': service,
+                        'cost': cost
+                    })
+
+                # Update usage type costs
+                if service not in processed_data['usage_types']:
+                    processed_data['usage_types'][service] = {}
+                if usage_type not in processed_data['usage_types'][service]:
+                    processed_data['usage_types'][service][usage_type] = 0.0
+                processed_data['usage_types'][service][usage_type] += cost
+
+            processed_data['daily_costs'].append({
+                'date': result['TimePeriod']['Start'],
+                'cost': daily_cost
+            })
+
+        # Sort services by cost
+        processed_data['services'].sort(key=lambda x: x['cost'], reverse=True)
+        
+        return processed_data
+
+    async def _get_bucket_versioning(self, s3_client: Any, bucket_name: str) -> bool:
+        """Helper method to get bucket versioning status."""
+        try:
+            versioning = await s3_client.get_bucket_versioning(Bucket=bucket_name)
+            return versioning.get('Status') == 'Enabled'
+        except Exception:
+            return False
 
     async def get_resource_by_id(self, resource_type: str, resource_id: str) -> Dict[str, Any]:
         """Retrieve a specific AWS resource by its ID."""

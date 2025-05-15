@@ -1,226 +1,201 @@
-from typing import List, Optional
-from datetime import datetime, timezone
+"""
+Core drift analysis engine for Cloud Drift Analyzer.
+
+This module implements the main drift detection engine that compares
+infrastructure-as-code state with actual cloud resources.
+"""
+
+from typing import List, Dict, Any, Optional
+import asyncio
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from .models import DriftResult, ResourceState, DriftType
-from ..providers.base import BaseProvider
-from ..state_adapters.base import BaseStateAdapter
-from .logging import get_logger, log_duration, LogContext
-from ..db import crud
+
+from ..providers.base import CloudProvider
+from ..state_adapters.base import StateAdapter
+from ..core.models import Resource, DriftResult, DriftType
+from ..core.logging import get_logger, log_duration, LogContext
 
 logger = get_logger(__name__)
 
 class DriftEngine:
-    """Main engine for analyzing infrastructure drift."""
+    """
+    Core engine for detecting and analyzing drift between IaC and cloud resources.
+    
+    This engine compares resources defined in infrastructure code with
+    actual deployed resources to identify differences.
+    """
     
     def __init__(
         self,
-        provider: BaseProvider,
-        state_adapter: BaseStateAdapter,
+        provider: CloudProvider,
+        state_adapter: StateAdapter,
         environment: str,
-        session: AsyncSession
+        session: AsyncSession,
+        max_concurrent_scans: int = 10
     ):
+        """
+        Initialize the drift analysis engine.
+        
+        Args:
+            provider: Cloud provider instance
+            state_adapter: Infrastructure-as-code state adapter
+            environment: Environment name (e.g., 'production', 'staging')
+            session: Database session for persisting results
+            max_concurrent_scans: Maximum number of concurrent resource scans
+        """
         self.provider = provider
         self.state_adapter = state_adapter
         self.environment = environment
         self.session = session
-        logger.info("drift_engine_initialized",
-                   environment=environment,
-                   provider_type=type(provider).__name__,
-                   adapter_type=type(state_adapter).__name__)
+        self.max_concurrent_scans = max_concurrent_scans
         
     async def analyze_drift(self) -> List[DriftResult]:
         """
-        Analyze drift between IaC state and actual cloud resources.
-        Returns a list of DriftResult objects.
+        Analyze drift between IaC state and cloud resources.
+        
+        Returns:
+            List of drift results
+        """
+        with LogContext(engine="drift", environment=self.environment):
+            logger.info("drift_analysis_started")
+            
+            with log_duration(logger, "get_expected_resources"):
+                # Get expected resources from IaC state
+                expected_resources = await self.state_adapter.get_resources()
+                logger.info("expected_resources_fetched", count=len(expected_resources))
+                
+            with log_duration(logger, "get_actual_resources"):
+                # Get actual resources from cloud provider
+                # Group by resource type for efficient scanning
+                resource_types = {r.resource_type for r in expected_resources}
+                
+                # Scan cloud resources with concurrency limits
+                semaphore = asyncio.Semaphore(self.max_concurrent_scans)
+                scan_tasks = []
+                
+                async def scan_resource_type(resource_type):
+                    async with semaphore:
+                        return await self.provider.get_resources(resource_type)
+                
+                for resource_type in resource_types:
+                    scan_tasks.append(scan_resource_type(resource_type))
+                
+                scan_results = await asyncio.gather(*scan_tasks)
+                
+                # Combine results
+                actual_resources = []
+                for resources in scan_results:
+                    actual_resources.extend(resources)
+                
+                logger.info("actual_resources_fetched", count=len(actual_resources))
+            
+            # Analyze drift
+            with log_duration(logger, "analyze_resource_drift"):
+                drift_results = await self._compare_resources(expected_resources, actual_resources)
+                
+            # Save results to database
+            with log_duration(logger, "save_drift_results"):
+                await self._save_results(drift_results)
+                
+            logger.info("drift_analysis_completed", 
+                       total_resources=len(expected_resources),
+                       drift_count=len(drift_results))
+            
+            return drift_results
+    
+    async def _compare_resources(
+        self, expected: List[Resource], actual: List[Resource]
+    ) -> List[DriftResult]:
+        """
+        Compare expected resources with actual resources to detect drift.
+        
+        Args:
+            expected: List of expected resources from IaC
+            actual: List of actual resources from cloud provider
+            
+        Returns:
+            List of drift results
         """
         results: List[DriftResult] = []
         
-        with log_duration(logger, "drift_analysis") as log:
-            try:
-                # Create initial drift scan record
-                drift_scan = await crud.create_drift_scan(
-                    session=self.session,
-                    provider=self.provider.__class__.__name__,
-                    iac_type=self.state_adapter.__class__.__name__,
-                    environment=self.environment
-                )
+        # Create dictionary of actual resources for easy lookup
+        actual_dict = {f"{r.resource_type}:{r.resource_id}": r for r in actual}
+        
+        # Check for missing and modified resources
+        for expected_resource in expected:
+            key = f"{expected_resource.resource_type}:{expected_resource.resource_id}"
+            
+            if key not in actual_dict:
+                # Resource exists in IaC but not in cloud (missing)
+                results.append(DriftResult(
+                    resource=expected_resource,
+                    drift_type=DriftType.MISSING,
+                    detected_at=datetime.now(),
+                    details={
+                        "message": f"Resource defined in IaC but not found in cloud",
+                        "expected": expected_resource.model_dump()
+                    }
+                ))
+                continue
                 
-                # Get expected state from IaC
-                logger.info("fetching_expected_state")
-                expected_resources = await self.state_adapter.get_resources()
-                logger.info("expected_state_fetched", count=len(expected_resources))
-                
-                # Get actual state from cloud provider
-                logger.info("fetching_actual_state")
-                actual_resources = await self.provider.get_resources()
-                logger.info("actual_state_fetched", count=len(actual_resources))
-
-                # Create maps for efficient lookup
-                actual_resources_map = {
-                    (r.resource_id, r.resource_type): r for r in actual_resources
-                }
-                expected_resources_map = {
-                    (r.resource_id, r.resource_type): r for r in expected_resources
-                }
-                
-                # Check for missing and changed resources
-                for expected in expected_resources:
-                    with LogContext(resource_id=expected.resource_id, 
-                                  resource_type=expected.resource_type):
-                        actual = actual_resources_map.get((expected.resource_id, expected.resource_type))
-                        if not actual:
-                            logger.warning("resource_missing")
-                            drift_result = self._create_missing_result(expected)
-                            results.append(drift_result)
-                            await crud.create_resource_drift(
-                                session=self.session,
-                                scan_id=str(drift_scan.id),
-                                drift_result=drift_result
-                            )
-                        elif not self._states_match(expected, actual):
-                            logger.warning("resource_changed")
-                            drift_result = self._create_changed_result(expected, actual)
-                            results.append(drift_result)
-                            await crud.create_resource_drift(
-                                session=self.session,
-                                scan_id=str(drift_scan.id),
-                                drift_result=drift_result
-                            )
-                            
-                # Check for extra resources
-                for actual in actual_resources:
-                    with LogContext(resource_id=actual.resource_id,
-                                  resource_type=actual.resource_type):
-                        if (actual.resource_id, actual.resource_type) not in expected_resources_map:
-                            logger.warning("unexpected_resource")
-                            drift_result = self._create_extra_result(actual)
-                            results.append(drift_result)
-                            await crud.create_resource_drift(
-                                session=self.session,
-                                scan_id=str(drift_scan.id),
-                                drift_result=drift_result
-                            )
-                
-                # Update drift scan with final results
-                await crud.update_drift_scan(
-                    session=self.session,
-                    scan_id=str(drift_scan.id),
-                    total_resources=len(expected_resources),
-                    drift_detected=len(results) > 0,
-                    status="completed"
-                )
-                
-                logger.info("drift_analysis_complete",
-                           total_resources=len(expected_resources),
-                           drift_count=len(results),
-                           drift_types={
-                               DriftType.MISSING: sum(1 for r in results if r.drift_type == DriftType.MISSING),
-                               DriftType.CHANGED: sum(1 for r in results if r.drift_type == DriftType.CHANGED),
-                               DriftType.EXTRA: sum(1 for r in results if r.drift_type == DriftType.EXTRA)
-                           })
-                            
-            except Exception as e:
-                # Update drift scan with error status if something went wrong
-                if 'drift_scan' in locals():
-                    await crud.update_drift_scan(
-                        session=self.session,
-                        scan_id=str(drift_scan.id),
-                        total_resources=0,
-                        drift_detected=False,
-                        status="failed",
-                        error_message=str(e)
-                    )
-                logger.error("drift_analysis_failed", error=str(e))
-                raise
-                
+            # Resource exists in both, check for differences
+            actual_resource = actual_dict[key]
+            differences = self.provider.compare_resources(expected_resource, actual_resource)
+            
+            if differences:
+                results.append(DriftResult(
+                    resource=expected_resource,
+                    drift_type=DriftType.MODIFIED,
+                    detected_at=datetime.now(),
+                    details={
+                        "message": f"Resource properties differ from IaC definition",
+                        "differences": differences,
+                        "expected": expected_resource.model_dump(),
+                        "actual": actual_resource.model_dump()
+                    }
+                ))
+        
+        # Check for unexpected resources (exist in cloud but not in IaC)
+        expected_keys = {f"{r.resource_type}:{r.resource_id}" for r in expected}
+        
+        for key, actual_resource in actual_dict.items():
+            if key not in expected_keys:
+                results.append(DriftResult(
+                    resource=actual_resource,
+                    drift_type=DriftType.UNEXPECTED,
+                    detected_at=datetime.now(),
+                    details={
+                        "message": f"Resource exists in cloud but not defined in IaC",
+                        "actual": actual_resource.model_dump()
+                    }
+                ))
+        
         return results
-
-    def _states_match(
-        self,
-        expected: ResourceState,
-        actual: ResourceState
-    ) -> bool:
-        """Compare two resource states to determine if they match."""
-        # Compare relevant properties while ignoring metadata
-        result = expected.properties == actual.properties
-        if not result:
-            logger.debug("states_mismatch",
-                        resource_id=expected.resource_id,
-                        differences=self._compute_changes(expected, actual))
-        return result
-
-    def _create_missing_result(self, expected: ResourceState) -> DriftResult:
-        """Create a DriftResult for a missing resource."""
-        return DriftResult(
-            drift_type=DriftType.MISSING,
-            resource=expected,
-            expected_state=expected,
-            actual_state=None,
-            changes=None,
-            timestamp=datetime.now(timezone.utc)
-        )
     
-    def _create_changed_result(
-        self,
-        expected: ResourceState,
-        actual: ResourceState
-    ) -> DriftResult:
-        """Create a DriftResult for a changed resource."""
-        return DriftResult(
-            drift_type=DriftType.CHANGED,
-            resource=expected,
-            expected_state=expected,
-            actual_state=actual,
-            changes=self._compute_changes(expected, actual),
-            timestamp=datetime.now(timezone.utc)
-        )
-    
-    def _create_extra_result(self, actual: ResourceState) -> DriftResult:
-        """Create a DriftResult for an extra resource."""
-        return DriftResult(
-            drift_type=DriftType.EXTRA,
-            resource=actual,
-            expected_state=None,
-            actual_state=actual,
-            changes=None,
-            timestamp=datetime.now(timezone.utc)
-        )
-    
-    def _compute_changes(
-        self,
-        expected: ResourceState,
-        actual: ResourceState
-    ) -> dict:
-        """Compute the differences between expected and actual states."""
-        changes = {}
+    async def _save_results(self, results: List[DriftResult]) -> None:
+        """
+        Save drift results to the database.
         
-        # Track changes for logging
-        added = []
-        removed = []
-        modified = []
-        
-        for key, expected_value in expected.properties.items():
-            if key not in actual.properties:
-                changes[key] = {"action": "removed", "value": expected_value}
-                removed.append(key)
-            elif actual.properties[key] != expected_value:
-                changes[key] = {
-                    "action": "modified",
-                    "old": expected_value,
-                    "new": actual.properties[key]
-                }
-                modified.append(key)
-        
-        for key, actual_value in actual.properties.items():
-            if key not in expected.properties:
-                changes[key] = {"action": "added", "value": actual_value}
-                added.append(key)
-        
-        if changes:
-            logger.debug("computed_changes",
-                        resource_id=expected.resource_id,
-                        added=added,
-                        removed=removed,
-                        modified=modified)
+        Args:
+            results: List of drift results to save
+        """
+        # Implementation depends on your ORM models
+        # This is a placeholder for the actual implementation
+        if not results:
+            logger.info("no_drift_results_to_save")
+            return
+            
+        try:
+            # Add results to the database session
+            for result in results:
+                self.session.add(result)
                 
-        return changes
+            # Commit the session
+            await self.session.commit()
+            logger.info("drift_results_saved", count=len(results))
+            
+        except Exception as e:
+            # Rollback on error
+            await self.session.rollback()
+            logger.error("failed_to_save_drift_results", error=str(e))
+            raise

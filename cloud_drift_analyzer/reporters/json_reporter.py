@@ -2,7 +2,7 @@ from typing import List
 import json
 from pathlib import Path
 from datetime import datetime
-from ..core.models import DriftResult
+from ..core.models import DriftResult, DriftType # Ensure DriftType is imported
 from ..core.logging import get_logger, log_duration, LogContext
 
 logger = get_logger(__name__)
@@ -46,7 +46,7 @@ class JSONReporter:
                     
                     # Prepare report data
                     report_data = self._prepare_report_data(drift_results, environment)
-                    logger.debug("report_data_prepared")
+                    # logger.debug("report_data_prepared") # This log is implicitly covered by log_duration context exit
                     
                     # Write JSON to file
                     output_file = Path(output_path)
@@ -67,57 +67,41 @@ class JSONReporter:
     
     def _prepare_report_data(
         self,
-        drift_results: List[DriftResult],
+        drift_results: List[DriftResult], # Corrected: List[DriftResult] instead of List<DriftResult]
         environment: str
     ) -> dict:
         """Prepare data structure for JSON report."""
         try:
             with log_duration(logger, "prepare_report_data"):
-                # Calculate statistics
-                total_resources = len(drift_results)
-                missing_count = sum(1 for r in drift_results if r.drift_type == "MISSING")
-                changed_count = sum(1 for r in drift_results if r.drift_type == "CHANGED")
-                extra_count = sum(1 for r in drift_results if r.drift_type == "EXTRA")
+                # Calculate statistics assuming drift_results contains only drifted items
+                total_drifts = len(drift_results)
+                missing_count = sum(1 for r in drift_results if r.drift_type == DriftType.MISSING)
+                changed_count = sum(1 for r in drift_results if r.drift_type == DriftType.CHANGED)
+                extra_count = sum(1 for r in drift_results if r.drift_type == DriftType.EXTRA)
                 
                 report_data = {
                     "metadata": {
                         "environment": environment,
                         "timestamp": datetime.utcnow().isoformat(),
-                        "total_resources": total_resources,
                         "drift_summary": {
-                            "total_drifts": len(drift_results),
+                            "total_drifts": total_drifts,
                             "missing": missing_count,
                             "changed": changed_count,
                             "extra": extra_count
                         }
                     },
-                    "results": []
+                    "results": [self._format_drift_result(result) for result in drift_results]
                 }
                 
-                # Format each result
-                for result in drift_results:
-                    with LogContext(
-                        resource_id=result.resource.resource_id,
-                        drift_type=result.drift_type
-                    ):
-                        try:
-                            report_data["results"].append(
-                                self._format_drift_result(result)
-                            )
-                        except Exception as e:
-                            logger.error("result_formatting_failed",
-                                       error=str(e))
-                
                 logger.debug("report_data_prepared",
-                           total_resources=total_resources,
-                           total_drifts=len(drift_results))
+                           total_drifts=total_drifts)
                 
                 return report_data
                 
         except Exception as e:
             logger.error("report_data_preparation_failed",
                         error=str(e))
-            raise
+            raise # Re-raise to be caught by generate_report if necessary or calling context
     
     def _format_drift_result(self, result: DriftResult) -> dict:
         """Format a drift result for JSON output."""
@@ -128,7 +112,7 @@ class JSONReporter:
                     "type": result.resource.resource_type,
                     "provider": result.resource.provider
                 },
-                "drift_type": result.drift_type.value,
+                "drift_type": result.drift_type.value, # .value is correct as DriftType is an Enum
                 "timestamp": result.timestamp.isoformat() if result.timestamp else None
             }
             
@@ -145,6 +129,7 @@ class JSONReporter:
             
         except Exception as e:
             logger.error("drift_result_formatting_failed",
+                        resource_id=result.resource.resource_id if result and result.resource else "unknown",
                         error=str(e))
             raise
     
@@ -153,6 +138,7 @@ class JSONReporter:
         try:
             if isinstance(obj, datetime):
                 return obj.isoformat()
+            # Add other type handlers if needed, e.g., for Pydantic models if not pre-converted
             raise TypeError(f"Type {type(obj)} not serializable")
         except Exception as e:
             logger.error("json_serialization_failed",

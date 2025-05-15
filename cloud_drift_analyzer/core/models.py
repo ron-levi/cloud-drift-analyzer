@@ -31,7 +31,7 @@ class DriftResult(BaseModel):
 
     def has_drift(self) -> bool:
         """Check if there is any drift detected."""
-        return True if self.drift_type in [DriftType.MISSING, DriftType.CHANGED, DriftType.EXTRA] else False
+        return self.drift_type in {DriftType.MISSING, DriftType.CHANGED, DriftType.EXTRA}
 
     def get_drift_summary(self) -> Dict[str, Any]:
         """Generate a summary of the drift detection."""

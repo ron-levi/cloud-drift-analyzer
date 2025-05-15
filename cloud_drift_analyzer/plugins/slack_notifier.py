@@ -1,7 +1,7 @@
 from typing import List, Dict, Any
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from ..core.models import DriftResult
+from ..core.models import DriftResult, DriftType
 from ..core.logging import get_logger, log_duration, LogContext
 
 logger = get_logger(__name__)
@@ -137,10 +137,9 @@ class SlackNotifier:
         """Create a summary of drift detection results."""
         try:
             total = len(drift_results)
-            missing = sum(1 for r in drift_results if r.drift_type == "MISSING")
-            changed = sum(1 for r in drift_results if r.drift_type == "CHANGED")
-            extra = sum(1 for r in drift_results if r.drift_type == "EXTRA")
-            
+            missing = sum(1 for r in drift_results if r.drift_type == DriftType.MISSING)
+            changed = sum(1 for r in drift_results if r.drift_type == DriftType.CHANGED)
+            extra = sum(1 for r in drift_results if r.drift_type == DriftType.EXTRA)
             return (
                 f"*Summary:*\n"
                 f"• Total issues found: {total}\n"
@@ -148,10 +147,8 @@ class SlackNotifier:
                 f"• Changed resources: {changed}\n"
                 f"• Extra resources: {extra}"
             )
-            
         except Exception as e:
-            logger.error("summary_creation_failed",
-                        error=str(e))
+            logger.error("summary_creation_failed", error=str(e))
             return "*Summary generation failed*"
     
     def _format_drift_result(self, result: DriftResult) -> List[Dict[str, Any]]:

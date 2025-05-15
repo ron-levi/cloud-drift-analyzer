@@ -1,7 +1,7 @@
 from typing import List
 from pathlib import Path
 from jinja2 import Environment, PackageLoader, select_autoescape
-from ..core.models import DriftResult
+from ..core.models import DriftResult, DriftType
 from ..core.logging import get_logger, log_duration, LogContext
 
 logger = get_logger(__name__)
@@ -79,35 +79,39 @@ class HTMLReporter:
         try:
             with log_duration(logger, "prepare_report_data"):
                 # Calculate statistics
-                total_resources = len(drift_results)
-                missing_count = sum(1 for r in drift_results if r.drift_type == "MISSING")
-                changed_count = sum(1 for r in drift_results if r.drift_type == "CHANGED")
-                extra_count = sum(1 for r in drift_results if r.drift_type == "EXTRA")
+                # Assuming drift_results contains only items that have drifted
+                total_drifted_resources = len(drift_results)
+                missing_count = sum(1 for r in drift_results if r.drift_type == DriftType.MISSING)
+                changed_count = sum(1 for r in drift_results if r.drift_type == DriftType.CHANGED)
+                extra_count = sum(1 for r in drift_results if r.drift_type == DriftType.EXTRA)
                 
                 # Group results by type
                 grouped_results = {
-                    "missing": [],
-                    "changed": [],
-                    "extra": []
+                    DriftType.MISSING.value.lower(): [],
+                    DriftType.CHANGED.value.lower(): [],
+                    DriftType.EXTRA.value.lower(): []
                 }
                 
                 for result in drift_results:
                     with LogContext(
                         resource_id=result.resource.resource_id,
-                        drift_type=result.drift_type
+                        drift_type=result.drift_type.value # Use .value for logging consistency
                     ):
                         try:
-                            group = result.drift_type.value.lower()
-                            grouped_results[group].append(
-                                self._format_drift_result(result)
-                            )
+                            group_key = result.drift_type.value.lower()
+                            if group_key in grouped_results: # Ensure group_key is valid
+                                grouped_results[group_key].append(
+                                    self._format_drift_result(result)
+                                )
+                            else:
+                                logger.warning("unknown_drift_type_group", group_key=group_key)
                         except Exception as e:
-                            logger.error("result_formatting_failed",
+                            logger.error("result_formatting_failed_in_grouping",
                                        error=str(e))
                 
                 report_data = {
                     "summary": {
-                        "total": total_resources,
+                        "total_drifted": total_drifted_resources, # Renamed for clarity
                         "missing": missing_count,
                         "changed": changed_count,
                         "extra": extra_count
@@ -117,7 +121,7 @@ class HTMLReporter:
                 }
                 
                 logger.debug("report_data_prepared",
-                           total_resources=total_resources,
+                           total_drifted_resources=total_drifted_resources,
                            drift_counts=report_data["summary"])
                 
                 return report_data

@@ -1,5 +1,5 @@
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import DriftResult, ResourceState, DriftType
 from ..providers.base import BaseProvider
@@ -54,12 +54,20 @@ class DriftEngine:
                 logger.info("fetching_actual_state")
                 actual_resources = await self.provider.get_resources()
                 logger.info("actual_state_fetched", count=len(actual_resources))
+
+                # Create maps for efficient lookup
+                actual_resources_map = {
+                    (r.resource_id, r.resource_type): r for r in actual_resources
+                }
+                expected_resources_map = {
+                    (r.resource_id, r.resource_type): r for r in expected_resources
+                }
                 
                 # Check for missing and changed resources
                 for expected in expected_resources:
                     with LogContext(resource_id=expected.resource_id, 
                                   resource_type=expected.resource_type):
-                        actual = self._find_matching_resource(expected, actual_resources)
+                        actual = actual_resources_map.get((expected.resource_id, expected.resource_type))
                         if not actual:
                             logger.warning("resource_missing")
                             drift_result = self._create_missing_result(expected)
@@ -83,7 +91,7 @@ class DriftEngine:
                 for actual in actual_resources:
                     with LogContext(resource_id=actual.resource_id,
                                   resource_type=actual.resource_type):
-                        if not self._find_matching_resource(actual, expected_resources):
+                        if (actual.resource_id, actual.resource_type) not in expected_resources_map:
                             logger.warning("unexpected_resource")
                             drift_result = self._create_extra_result(actual)
                             results.append(drift_result)
@@ -127,22 +135,6 @@ class DriftEngine:
                 
         return results
 
-    def _find_matching_resource(
-        self,
-        resource: ResourceState,
-        resource_list: List[ResourceState]
-    ) -> Optional[ResourceState]:
-        """Find a matching resource in the list based on ID and type."""
-        logger.debug("finding_matching_resource",
-                    resource_id=resource.resource_id,
-                    resource_type=resource.resource_type)
-        return next(
-            (r for r in resource_list 
-             if r.resource_id == resource.resource_id 
-             and r.resource_type == resource.resource_type),
-            None
-        )
-
     def _states_match(
         self,
         expected: ResourceState,
@@ -165,7 +157,7 @@ class DriftEngine:
             expected_state=expected,
             actual_state=None,
             changes=None,
-            timestamp=datetime.now(datetime.timezone.utc)
+            timestamp=datetime.now(timezone.utc)
         )
     
     def _create_changed_result(
@@ -180,7 +172,7 @@ class DriftEngine:
             expected_state=expected,
             actual_state=actual,
             changes=self._compute_changes(expected, actual),
-            timestamp=datetime.now(datetime.timezone.utc)
+            timestamp=datetime.now(timezone.utc)
         )
     
     def _create_extra_result(self, actual: ResourceState) -> DriftResult:
@@ -191,7 +183,7 @@ class DriftEngine:
             expected_state=None,
             actual_state=actual,
             changes=None,
-            timestamp=datetime.now(datetime.timezone.utc)
+            timestamp=datetime.now(timezone.utc)
         )
     
     def _compute_changes(

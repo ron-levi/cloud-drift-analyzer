@@ -65,7 +65,7 @@ class AnalyzeDriftTool(Tool[DriftAnalysisInput, DriftAnalysisOutput]):
                 resource_id=input_data.resource_id
             )
             
-            if not drift_result.has_drift:
+            if not drift_result.has_drift():
                 return DriftAnalysisOutput(
                     drift_detected=False,
                     drift_summary="No drift detected. Resource matches IaC definition.",
@@ -95,32 +95,42 @@ class AnalyzeDriftTool(Tool[DriftAnalysisInput, DriftAnalysisOutput]):
     def _process_drift_result(self, result: DriftResult) -> tuple[str, str, str]:
         """Process drift result to generate summary, recommendation and severity."""
         summary_parts = []
-        severity = Severity.LOW
+        current_severity = Severity.LOW
         
+        security_keywords = {"public", "acl", "security", "policy", "encryption"}
+
         for change in result.changes:
-            if change.drift_type == DriftType.MODIFIED:
+            drift_type = change.drift_type
+            property_path_lower = change.property_path.lower()
+
+            if drift_type == DriftType.MODIFIED:
                 summary_parts.append(f"{change.property_path} changed from '{change.expected_value}' to '{change.actual_value}'")
-                severity = max(severity, Severity.MEDIUM)
-            elif change.drift_type == DriftType.ADDED:
+                new_severity = Severity.MEDIUM
+            elif drift_type == DriftType.ADDED:
                 summary_parts.append(f"New property {change.property_path} with value '{change.actual_value}' not in IaC")
-                severity = max(severity, Severity.MEDIUM)
-            elif change.drift_type == DriftType.REMOVED:
+                new_severity = Severity.MEDIUM
+            elif drift_type == DriftType.REMOVED:
                 summary_parts.append(f"Property {change.property_path} with value '{change.expected_value}' missing from cloud")
-                severity = max(severity, Severity.HIGH)
-            
+                new_severity = Severity.HIGH
+            else:
+                continue
+
             # Elevate severity for security-related properties
-            if any(keyword in change.property_path.lower() for keyword in ["public", "acl", "security", "policy", "encryption"]):
-                severity = Severity.HIGH if change.drift_type != DriftType.REMOVED else Severity.CRITICAL
+            if any(keyword in property_path_lower for keyword in security_keywords):
+                new_severity = Severity.HIGH if drift_type != DriftType.REMOVED else Severity.CRITICAL
+            
+            if new_severity > current_severity:
+                current_severity = new_severity
         
         summary = "; ".join(summary_parts)
         
         # Generate recommendation based on severity
-        if severity in [Severity.LOW, Severity.MEDIUM]:
+        if current_severity in [Severity.LOW, Severity.MEDIUM]:
             recommendation = "Reapply Terraform state or update the IaC to match current state"
         else:
             recommendation = "Investigate manual changes urgently; potential security implications"
         
-        return summary, recommendation, severity
+        return summary, recommendation, current_severity
 
 
 # ===== Cost Optimization Tool =====

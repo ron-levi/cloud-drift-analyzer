@@ -22,28 +22,10 @@ class TerraformStateAdapter(BaseStateAdapter):
     async def get_resources(self) -> List[ResourceState]:
         """Get resources from Terraform state."""
         with log_duration(logger, "get_terraform_resources"):
-            try:
-                # Validate state file/directory before proceeding
-                if not await self.validate_state_file():
-                    raise ValueError("Invalid or corrupted Terraform state")
-
-                state_data = await self._get_state_data()
-                resources = self._parse_state_data(state_data)
-                logger.info("terraform_resources_parsed", 
-                          count=len(resources))
-                return resources
-            except json.JSONDecodeError as e:
-                logger.error("terraform_state_parse_failed", 
-                           error=str(e))
-                raise ValueError(f"Invalid JSON in Terraform state: {str(e)}")
-            except subprocess.CalledProcessError as e:
-                logger.error("terraform_command_failed",
-                           error=str(e))
-                raise RuntimeError(f"Terraform command failed: {str(e)}")
-            except Exception as e:
-                logger.error("terraform_resource_fetch_failed", 
-                           error=str(e))
-                raise
+            if not await self.validate_state_file():
+                raise ValueError("Invalid or corrupted Terraform state")
+            state_data = await self._get_state_data()
+            return self._parse_state_data(state_data)
 
     async def validate_state_file(self) -> bool:
         """Validate the Terraform state file format."""
@@ -216,99 +198,50 @@ class TerraformStateAdapter(BaseStateAdapter):
             
     def _parse_state_data(self, state_data: Dict[str, Any]) -> List[ResourceState]:
         """Parse Terraform state data into ResourceState objects."""
-        resources = []
-        
-        try:
-            # Handle both tfstate file format and terraform show -json format
-            if 'values' in state_data:
-                # terraform show -json format
-                logger.debug("parsing_terraform_show_output")
-                root_module = state_data['values'].get('root_module', {})
-                resources.extend(self._parse_module_resources(root_module))
-                
-                # Parse child modules
-                if 'child_modules' in root_module:
-                    for module in root_module['child_modules']:
-                        resources.extend(self._parse_module_resources(module))
-                        
-            elif 'resources' in state_data:
-                # .tfstate file format
-                logger.debug("parsing_tfstate_file")
-                for resource in state_data['resources']:
-                    resources.extend(self._parse_tfstate_resource(resource))
-                    
+        # Handle both tfstate file format and terraform show -json format
+        if 'values' in state_data:
+            root_module = state_data['values'].get('root_module', {})
+            resources = self._parse_module_resources(root_module)
+            for module in root_module.get('child_modules', []):
+                resources.extend(self._parse_module_resources(module))
             return resources
-            
-        except Exception as e:
-            logger.error("state_parsing_failed", error=str(e))
-            raise
-        
+        elif 'resources' in state_data:
+            return [r for resource in state_data['resources'] for r in self._parse_tfstate_resource(resource)]
+        return []
+
     def _parse_module_resources(self, module: Dict[str, Any]) -> List[ResourceState]:
         """Parse resources from a module in terraform show -json format."""
-        resources = []
-        
-        try:
-            for resource in module.get('resources', []):
-                with LogContext(
-                    resource_type=resource.get('type', ''),
-                    provider=resource.get('provider_name', '')
-                ):
-                    provider = resource.get('provider_name', '')
-                    resource_type = resource.get('type', '')
-                    
-                    for instance in resource.get('instances', []):
-                        try:
-                            resources.append(ResourceState(
-                                resource_id=instance.get('index_key', resource.get('name', '')),
-                                resource_type=f"{provider}_{resource_type}",
-                                provider=provider,
-                                properties=instance.get('attributes', {}),
-                                metadata={
-                                    'address': resource.get('address', ''),
-                                    'mode': resource.get('mode', '')
-                                }
-                            ))
-                            logger.debug("resource_parsed")
-                        except Exception as e:
-                            logger.error("resource_parse_failed",
-                                       error=str(e))
-                            
-            return resources
-            
-        except Exception as e:
-            logger.error("module_parsing_failed", error=str(e))
-            raise
-        
+        provider = lambda r: r.get('provider_name', '')
+        resource_type = lambda r: r.get('type', '')
+        return [
+            ResourceState(
+                resource_id=instance.get('index_key', resource.get('name', '')),
+                resource_type=f"{provider(resource)}_{resource_type(resource)}",
+                provider=provider(resource),
+                properties=instance.get('attributes', {}),
+                metadata={
+                    'address': resource.get('address', ''),
+                    'mode': resource.get('mode', '')
+                }
+            )
+            for resource in module.get('resources', [])
+            for instance in resource.get('instances', [])
+        ]
+
     def _parse_tfstate_resource(self, resource: Dict[str, Any]) -> List[ResourceState]:
         """Parse a resource from .tfstate format."""
-        resources = []
-        
-        try:
-            # Extract provider from the provider string
-            provider = resource.get('provider', '').split('/')[-1]
-            resource_type = resource.get('type', '')
-            
-            with LogContext(resource_type=resource_type, provider=provider):
-                for instance in resource.get('instances', []):
-                    try:
-                        resources.append(ResourceState(
-                            resource_id=instance.get('index_key', resource.get('name', '')),
-                            resource_type=resource_type,
-                            provider=provider,
-                            properties=instance.get('attributes', {}),
-                            metadata={
-                                'module': resource.get('module', ''),
-                                'mode': resource.get('mode', '')
-                            }
-                        ))
-                        logger.debug("resource_parsed")
-                    except Exception as e:
-                        logger.error("resource_parse_failed",
-                                   error=str(e))
-                        
-            return resources
-            
-        except Exception as e:
-            logger.error("tfstate_resource_parsing_failed",
-                        error=str(e))
-            raise
+        provider = resource.get('provider', '').split('/')[-1]
+        resource_type = resource.get('type', '')
+        return [
+            ResourceState(
+                resource_id=instance.get('index_key', resource.get('name', '')),
+                resource_type=resource_type,
+                provider=provider,
+                properties=instance.get('attributes', {}),
+                metadata={
+                    'module': resource.get('module', ''),
+                    'mode': resource.get('mode', '')
+                }
+            )
+            for instance in resource.get('instances', [])
+        ]

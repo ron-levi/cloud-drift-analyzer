@@ -45,7 +45,7 @@ def configure_logging(
         # JSON formatting
         processors.extend([
             structlog.processors.dict_tracebacks,
-            structlog.processors.JSONRenderer(serializer=_json_serializer)
+            structlog.processors.JSONRenderer()
         ])
     else:
         # Console formatting
@@ -87,12 +87,6 @@ def _create_logger_factory(log_file: str) -> structlog.stdlib.LoggerFactory:
         return logger
         
     return structlog.stdlib.LoggerFactory(create_stdlib_logger)
-
-def _json_serializer(obj: Any) -> str:
-    """Custom JSON serializer that handles datetime objects."""
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    return str(obj)
 
 class LogContext:
     """Context manager for adding temporary context to logs."""

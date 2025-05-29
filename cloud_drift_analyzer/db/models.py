@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
 from sqlmodel import SQLModel, Field
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, Text
 from uuid import UUID, uuid4
 
 class DriftScan(SQLModel, table=True):
@@ -56,3 +56,35 @@ class RefreshToken(SQLModel, table=True):
     expires_at: datetime
     created_at: datetime = Field(default_factory=datetime.utcnow)
     is_revoked: bool = False
+
+class ChatConversation(SQLModel, table=True):
+    """Model representing a chat conversation."""
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="user.id")
+    title: str = Field(max_length=255)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    is_active: bool = True
+
+class ChatMessage(SQLModel, table=True):
+    """Model representing a chat message."""
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    conversation_id: UUID = Field(foreign_key="chatconversation.id")
+    role: str  # "user", "assistant", "system"
+    content: str = Field(sa_column=Column(Text))
+    message_metadata: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
+    tool_calls: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    tool_results: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class ToolExecution(SQLModel, table=True):
+    """Model for tracking tool executions."""
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    message_id: UUID = Field(foreign_key="chatmessage.id")
+    tool_name: str
+    input_data: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
+    output_data: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
+    execution_status: str = "pending"  # "pending", "success", "error"
+    error_message: Optional[str] = None
+    execution_time_ms: Optional[int] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)

@@ -1,12 +1,17 @@
 from fastapi import FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime
 from typing import Callable
 import uuid
 import json
+import os
 
-from cloud_drift_analyzer.api.routes import drift, health, auth
+from cloud_drift_analyzer.api.routes import drift, health, auth, chat
+from cloud_drift_analyzer.mcp.api import router as mcp_router
 from cloud_drift_analyzer.core.logging import get_logger, LogContext, configure_logging
+from cloud_drift_analyzer.db.database import init_db
 
 logger = get_logger(__name__)
 
@@ -64,12 +69,39 @@ def create_app() -> FastAPI:
         version="1.0.0"
     )
     
+    @app.on_event("startup")
+    async def startup_event():
+        """Initialize database on application startup."""
+        await init_db()
+    
     # Add logging middleware
     app.add_middleware(LoggingMiddleware)
+    
+    # Mount static files for frontend
+    # Calculate frontend path relative to project root
+    current_dir = os.path.dirname(os.path.abspath(__file__))  # api directory
+    project_root = os.path.dirname(os.path.dirname(current_dir))  # project root
+    frontend_path = os.path.join(project_root, "frontend")
+    
+    if os.path.exists(frontend_path):
+        app.mount("/static", StaticFiles(directory=frontend_path), name="static")
+        logger.info("frontend_mounted", path=frontend_path)
+    else:
+        logger.warning("frontend_directory_not_found", path=frontend_path)
+    
+    # Root endpoint to serve frontend
+    @app.get("/")
+    async def serve_frontend():
+        frontend_file = os.path.join(frontend_path, "index.html")
+        if os.path.exists(frontend_file):
+            return FileResponse(frontend_file)
+        return {"message": "Frontend not found"}
     
     # Include routers
     app.include_router(health.router, tags=["health"])
     app.include_router(auth.router, prefix="/api/v1")  # Added auth router
+    app.include_router(chat.router, prefix="/api/v1")  # Added chat router
+    app.include_router(mcp_router, prefix="/api/v1")  # Added MCP router
     app.include_router(drift.router, prefix="/api/v1")
     
     logger.info("api_application_initialized")

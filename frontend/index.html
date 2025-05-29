@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Drift Analyzer Chat</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <style>
+        .chat-message {
+            max-width: 80%;
+        }
+        .user-message {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .assistant-message {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .typing-indicator {
+            display: none;
+        }
+        .typing-indicator.active {
+            display: block;
+        }
+        .tool-result {
+            background: #f7fafc;
+            border-left: 4px solid #4299e1;
+            margin-top: 8px;
+            padding: 12px;
+            border-radius: 4px;
+        }
+        .login-form {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- Login Modal -->
+    <div id="loginModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-8 max-w-md w-full mx-4">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">Login to Cloud Drift Analyzer</h2>
+            <form id="loginForm" class="space-y-4">
+                <div>
+                    <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                    <input type="text" id="username" name="username" required 
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <input type="password" id="password" name="password" required 
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <button type="submit" 
+                        class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    Login
+                </button>
+            </form>
+            <div class="mt-4 text-center">
+                <a href="#" id="showRegister" class="text-blue-600 hover:text-blue-800 text-sm">Need an account? Register here</a>
+            </div>
+            <div id="loginError" class="mt-4 text-red-600 text-sm hidden"></div>
+        </div>
+    </div>
+
+    <!-- Register Modal -->
+    <div id="registerModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg p-8 max-w-md w-full mx-4">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">Register for Cloud Drift Analyzer</h2>
+            <form id="registerForm" class="space-y-4">
+                <div>
+                    <label for="regUsername" class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                    <input type="text" id="regUsername" name="username" required 
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label for="regEmail" class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                    <input type="email" id="regEmail" name="email" required 
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label for="regPassword" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <input type="password" id="regPassword" name="password" required 
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <button type="submit" 
+                        class="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500">
+                    Register
+                </button>
+            </form>
+            <div class="mt-4 text-center">
+                <a href="#" id="showLogin" class="text-blue-600 hover:text-blue-800 text-sm">Already have an account? Login here</a>
+            </div>
+            <div id="registerError" class="mt-4 text-red-600 text-sm hidden"></div>
+        </div>
+    </div>
+
+    <!-- Main Chat Interface -->
+    <div id="chatInterface" class="hidden h-screen flex flex-col">
+        <!-- Header -->
+        <header class="bg-white shadow-md p-4 flex justify-between items-center">
+            <div class="flex items-center space-x-3">
+                <h1 class="text-2xl font-bold text-gray-800">Cloud Drift Analyzer</h1>
+                <span class="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">AI Assistant</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span id="userInfo" class="text-gray-600"></span>
+                <button id="newConversation" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">
+                    New Chat
+                </button>
+                <button id="logoutBtn" class="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700">
+                    Logout
+                </button>
+            </div>
+        </header>
+
+        <div class="flex-1 flex overflow-hidden">
+            <!-- Sidebar with conversations -->
+            <div class="w-1/4 bg-white border-r border-gray-200 overflow-y-auto">
+                <div class="p-4">
+                    <h3 class="font-semibold text-gray-800 mb-3">Recent Conversations</h3>
+                    <div id="conversationsList" class="space-y-2">
+                        <!-- Conversations will be loaded here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat area -->
+            <div class="flex-1 flex flex-col">
+                <!-- Messages -->
+                <div id="messagesContainer" class="flex-1 overflow-y-auto p-6 space-y-4">
+                    <div class="text-center text-gray-500 py-8">
+                        <h3 class="text-lg font-medium mb-2">Welcome to Cloud Drift Analyzer</h3>
+                        <p>I can help you analyze infrastructure drift, optimize costs, review security, and more!</p>
+                        <p class="text-sm mt-2">Try asking: "Analyze drift in my S3 buckets" or "Help me optimize costs"</p>
+                    </div>
+                </div>
+
+                <!-- Typing indicator -->
+                <div id="typingIndicator" class="typing-indicator px-6 py-2">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 animate-pulse"></div>
+                        <span class="text-gray-500 text-sm">AI is thinking...</span>
+                    </div>
+                </div>
+
+                <!-- Input area -->
+                <div class="bg-white border-t border-gray-200 p-4">
+                    <div class="flex space-x-4">
+                        <input type="text" id="messageInput" placeholder="Ask me about your cloud infrastructure..." 
+                               class="flex-1 border border-gray-300 rounded-md px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <button id="sendButton" 
+                                class="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            Send
+                        </button>
+                    </div>
+                    <div class="flex items-center mt-2 space-x-4">
+                        <label class="flex items-center space-x-2">
+                            <input type="checkbox" id="useTools" checked class="form-checkbox h-4 w-4 text-blue-600">
+                            <span class="text-sm text-gray-600">Use MCP Tools</span>
+                        </label>
+                        <span id="connectionStatus" class="text-xs text-gray-500">Disconnected</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class CloudDriftChat {
+            constructor() {
+                this.ws = null;
+                this.token = localStorage.getItem('token');
+                this.currentUser = null;
+                this.currentConversation = null;
+                this.conversations = [];
+                this.apiBaseUrl = '/api/v1';
+                
+                this.initializeEventListeners();
+                this.checkAuthStatus();
+            }
+
+            initializeEventListeners() {
+                // Login form
+                document.getElementById('loginForm').addEventListener('submit', (e) => this.handleLogin(e));
+                document.getElementById('registerForm').addEventListener('submit', (e) => this.handleRegister(e));
+                document.getElementById('showRegister').addEventListener('click', () => this.showRegisterModal());
+                document.getElementById('showLogin').addEventListener('click', () => this.showLoginModal());
+                
+                // Chat interface
+                document.getElementById('sendButton').addEventListener('click', () => this.sendMessage());
+                document.getElementById('messageInput').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') this.sendMessage();
+                });
+                document.getElementById('newConversation').addEventListener('click', () => this.startNewConversation());
+                document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
+            }
+
+            async checkAuthStatus() {
+                if (!this.token) {
+                    this.showLoginModal();
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${this.apiBaseUrl}/auth/me`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    if (response.ok) {
+                        this.currentUser = await response.json();
+                        this.showChatInterface();
+                    } else {
+                        localStorage.removeItem('token');
+                        this.showLoginModal();
+                    }
+                } catch (error) {
+                    console.error('Auth check failed:', error);
+                    this.showLoginModal();
+                }
+            }
+
+            async handleLogin(e) {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                
+                try {
+                    const response = await fetch(`${this.apiBaseUrl}/auth/token`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams(formData)
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.token = data.access_token;
+                        localStorage.setItem('token', this.token);
+                        await this.checkAuthStatus();
+                    } else {
+                        const error = await response.json();
+                        this.showError('loginError', error.detail || 'Login failed');
+                    }
+                } catch (error) {
+                    this.showError('loginError', 'Network error. Please try again.');
+                }
+            }
+
+            async handleRegister(e) {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                
+                try {
+                    const response = await fetch(`${this.apiBaseUrl}/auth/register`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(Object.fromEntries(formData))
+                    });
+
+                    if (response.ok) {
+                        this.showLoginModal();
+                        // You could auto-login here or show a success message
+                    } else {
+                        const error = await response.json();
+                        this.showError('registerError', error.detail || 'Registration failed');
+                    }
+                } catch (error) {
+                    this.showError('registerError', 'Network error. Please try again.');
+                }
+            }
+
+            showError(elementId, message) {
+                const errorElement = document.getElementById(elementId);
+                errorElement.textContent = message;
+                errorElement.classList.remove('hidden');
+                setTimeout(() => errorElement.classList.add('hidden'), 5000);
+            }
+
+            showLoginModal() {
+                document.getElementById('loginModal').classList.remove('hidden');
+                document.getElementById('registerModal').classList.add('hidden');
+                document.getElementById('chatInterface').classList.add('hidden');
+            }
+
+            showRegisterModal() {
+                document.getElementById('registerModal').classList.remove('hidden');
+                document.getElementById('loginModal').classList.add('hidden');
+            }
+
+            showChatInterface() {
+                document.getElementById('loginModal').classList.add('hidden');
+                document.getElementById('registerModal').classList.add('hidden');
+                document.getElementById('chatInterface').classList.remove('hidden');
+                
+                document.getElementById('userInfo').textContent = `Welcome, ${this.currentUser.username}`;
+                
+                this.connectWebSocket();
+                this.loadConversations();
+            }
+
+            connectWebSocket() {
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsProtocol}//${window.location.host}${this.apiBaseUrl}/chat/ws?token=${this.token}`;
+                
+                this.ws = new WebSocket(wsUrl);
+                
+                this.ws.onopen = () => {
+                    document.getElementById('connectionStatus').textContent = 'Connected';
+                    document.getElementById('connectionStatus').className = 'text-xs text-green-500';
+                };
+                
+                this.ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage(data);
+                };
+                
+                this.ws.onclose = () => {
+                    document.getElementById('connectionStatus').textContent = 'Disconnected';
+                    document.getElementById('connectionStatus').className = 'text-xs text-red-500';
+                };
+                
+                this.ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+            }
+
+            handleWebSocketMessage(data) {
+                switch (data.type) {
+                    case 'user_message':
+                        this.addMessage(data.message, true);
+                        break;
+                    case 'assistant_message':
+                        this.hideTypingIndicator();
+                        this.addMessage(data.message, false);
+                        break;
+                    case 'error':
+                        this.hideTypingIndicator();
+                        this.addMessage({ content: data.message, role: 'assistant' }, false);
+                        break;
+                }
+            }
+
+            sendMessage() {
+                const input = document.getElementById('messageInput');
+                const message = input.value.trim();
+                
+                if (!message || !this.ws) return;
+                
+                const useTools = document.getElementById('useTools').checked;
+                
+                this.ws.send(JSON.stringify({
+                    message: message,
+                    conversation_id: this.currentConversation?.id,
+                    use_tools: useTools
+                }));
+                
+                input.value = '';
+                this.showTypingIndicator();
+            }
+
+            addMessage(message, isUser) {
+                const container = document.getElementById('messagesContainer');
+                const messageDiv = document.createElement('div');
+                
+                messageDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
+                
+                const contentDiv = document.createElement('div');
+                contentDiv.className = `chat-message p-4 rounded-lg text-white ${isUser ? 'user-message' : 'assistant-message'}`;
+                
+                let content = message.content;
+                
+                // Add tool results if present
+                if (message.tool_results && !isUser) {
+                    content += this.formatToolResults(message.tool_results);
+                }
+                
+                contentDiv.innerHTML = `
+                    <div class="text-sm mb-1">${isUser ? 'You' : 'AI Assistant'}</div>
+                    <div class="whitespace-pre-wrap">${this.escapeHtml(content)}</div>
+                    <div class="text-xs mt-2 opacity-75">${new Date(message.timestamp || Date.now()).toLocaleTimeString()}</div>
+                `;
+                
+                messageDiv.appendChild(contentDiv);
+                container.appendChild(messageDiv);
+                container.scrollTop = container.scrollHeight;
+            }
+
+            formatToolResults(toolResults) {
+                if (!toolResults || typeof toolResults !== 'object') return '';
+                
+                return `\n\n📊 Tool Results:\n${JSON.stringify(toolResults, null, 2)}`;
+            }
+
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            showTypingIndicator() {
+                document.getElementById('typingIndicator').classList.add('active');
+            }
+
+            hideTypingIndicator() {
+                document.getElementById('typingIndicator').classList.remove('active');
+            }
+
+            async loadConversations() {
+                try {
+                    const response = await fetch(`${this.apiBaseUrl}/chat/conversations`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.conversations = data.conversations;
+                        this.renderConversations();
+                    }
+                } catch (error) {
+                    console.error('Failed to load conversations:', error);
+                }
+            }
+
+            renderConversations() {
+                const container = document.getElementById('conversationsList');
+                container.innerHTML = '';
+                
+                this.conversations.forEach(conv => {
+                    const div = document.createElement('div');
+                    div.className = 'p-3 hover:bg-gray-100 cursor-pointer rounded-md border border-gray-200';
+                    div.innerHTML = `
+                        <div class="font-medium text-sm text-gray-800 truncate">${conv.title}</div>
+                        <div class="text-xs text-gray-500">${new Date(conv.updated_at).toLocaleDateString()}</div>
+                    `;
+                    div.addEventListener('click', () => this.loadConversation(conv));
+                    container.appendChild(div);
+                });
+            }
+
+            async loadConversation(conversation) {
+                this.currentConversation = conversation;
+                
+                try {
+                    const response = await fetch(`${this.apiBaseUrl}/chat/conversations/${conversation.id}`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.renderConversationMessages(data.messages);
+                    }
+                } catch (error) {
+                    console.error('Failed to load conversation:', error);
+                }
+            }
+
+            renderConversationMessages(messages) {
+                const container = document.getElementById('messagesContainer');
+                container.innerHTML = '';
+                
+                messages.forEach(message => {
+                    this.addMessage(message, message.role === 'user');
+                });
+            }
+
+            startNewConversation() {
+                this.currentConversation = null;
+                document.getElementById('messagesContainer').innerHTML = `
+                    <div class="text-center text-gray-500 py-8">
+                        <h3 class="text-lg font-medium mb-2">New Conversation</h3>
+                        <p>Ask me anything about your cloud infrastructure!</p>
+                    </div>
+                `;
+            }
+
+            logout() {
+                localStorage.removeItem('token');
+                this.token = null;
+                this.currentUser = null;
+                if (this.ws) {
+                    this.ws.close();
+                }
+                this.showLoginModal();
+            }
+        }
+
+        // Initialize the chat application
+        document.addEventListener('DOMContentLoaded', () => {
+            new CloudDriftChat();
+        });
+    </script>
+</body>
+</html>

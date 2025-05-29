@@ -4,6 +4,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel import SQLModel
 from ..core.logging import get_logger, log_duration, LogContext
 
+# Import all models to register them with SQLModel
+from .models import (
+    DriftScan, 
+    ResourceDrift, 
+    NotificationConfig, 
+    User, 
+    RefreshToken, 
+    ChatConversation, 
+    ChatMessage, 
+    ToolExecution
+)
+
 logger = get_logger(__name__)
 
 # Get this from environment variable in production

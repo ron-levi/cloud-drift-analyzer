@@ -2,7 +2,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import DriftResult, ResourceState, DriftType
-from ..providers.base import BaseProvider
+from ..providers.base import CloudProvider
 from ..state_adapters.base import BaseStateAdapter
 from .logging import get_logger, log_duration, LogContext
 from ..db import crud
@@ -14,7 +14,7 @@ class DriftEngine:
     
     def __init__(
         self,
-        provider: BaseProvider,
+        provider: CloudProvider,
         state_adapter: BaseStateAdapter,
         environment: str,
         session: AsyncSession

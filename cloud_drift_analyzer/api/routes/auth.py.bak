@@ -1,15 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime, timezone
+from sqlalchemy impo@router.post("/change-password")
+async def change_password(
+    password_data: PasswordChange,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):ect
+from datetime import datetime, timedelta, timezone
+import jwt
 
 from cloud_drift_analyzer.api.schemas.auth import UserCreate, UserResponse, Token, UserLogin, UserUpdate, PasswordChange, RefreshToken
-from cloud_drift_analyzer.api.security.auth import verify_password, get_password_hash, create_access_token, create_refresh_token, verify_token, oauth2_scheme
+from cloud_drift_analyzer.api.security.auth import verify_password, get_password_hash, create_access_token, create_refresh_token, verify_token
 from cloud_drift_analyzer.api.dependencies import get_current_user
 from cloud_drift_analyzer.db.database import get_session
 from cloud_drift_analyzer.db.models import User, RefreshToken as RefreshTokenModel
-from cloud_drift_analyzer.core.logging import get_logger, LogContext
+from cloud_drift_analyzer.core.logging import get_logger, log_duration, LogContext
+
 
 router = APIRouter(
     prefix="/auth",
@@ -17,6 +24,7 @@ router = APIRouter(
 )
 
 logger = get_logger(__name__)
+from cloud_drift_analyzer.api.security.auth import oauth2_scheme
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register_user(
@@ -202,24 +210,34 @@ async def update_user(
                 detail="Failed to update user"
             )
 
-@router.post("/change-password")
+@router.post("/me/change-password")
 async def change_password(
-    password_data: PasswordChange,
-    current_user: User = Depends(get_current_user),
+    password_change: PasswordChange,
+    current_user: User = Depends(get_current_user_from_token),
     session: AsyncSession = Depends(get_session)
 ):
-    """Change user password."""
+    """Change user's password."""
     with LogContext(user_id=str(current_user.id)):
         try:
             # Verify current password
-            if not verify_password(password_data.current_password, current_user.hashed_password):
+            if not verify_password(password_change.current_password, current_user.hashed_password):
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Current password is incorrect"
                 )
             
             # Update password
-            current_user.hashed_password = get_password_hash(password_data.new_password)
+            current_user.hashed_password = get_password_hash(password_change.new_password)
+            await session.commit()
+            
+            # Revoke all refresh tokens
+            stmt = select(RefreshTokenModel).where(RefreshTokenModel.user_id == current_user.id)
+            result = await session.execute(stmt)
+            refresh_tokens = result.scalars().all()
+            
+            for token in refresh_tokens:
+                token.is_revoked = True
+            
             await session.commit()
             
             logger.info("password_changed")
@@ -236,33 +254,35 @@ async def change_password(
 
 @router.post("/logout")
 async def logout(
-    refresh_token: RefreshToken,
+    current_user: User = Depends(get_current_user_from_token),
     session: AsyncSession = Depends(get_session)
 ):
-    """Logout and revoke refresh token."""
-    try:
-        # Find and revoke refresh token
-        stmt = select(RefreshTokenModel).where(RefreshTokenModel.token == refresh_token.refresh_token)
-        result = await session.execute(stmt)
-        token = result.scalar_one_or_none()
-        
-        if token:
-            token.is_revoked = True
+    """Logout user by revoking all refresh tokens."""
+    with LogContext(user_id=str(current_user.id)):
+        try:
+            # Revoke all refresh tokens
+            stmt = select(RefreshTokenModel).where(RefreshTokenModel.user_id == current_user.id)
+            result = await session.execute(stmt)
+            refresh_tokens = result.scalars().all()
+            
+            for token in refresh_tokens:
+                token.is_revoked = True
+            
             await session.commit()
-        
-        logger.info("user_logged_out")
-        return {"message": "Logged out successfully"}
-        
-    except Exception as e:
-        logger.error("logout_failed", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to logout"
-        )
+            
+            logger.info("user_logged_out")
+            return {"message": "Successfully logged out"}
+            
+        except Exception as e:
+            logger.error("logout_failed", error=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to logout"
+            )
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user_info(
-    current_user: User = Depends(get_current_user)
+async def get_current_user(
+    current_user: User = Depends(get_current_user_from_token)
 ):
     """Get current authenticated user details."""
     return current_user

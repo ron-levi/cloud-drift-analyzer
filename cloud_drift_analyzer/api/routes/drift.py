@@ -8,7 +8,7 @@ from cloud_drift_analyzer.db.database import get_session
 from cloud_drift_analyzer.db import crud
 from cloud_drift_analyzer.core.models import DriftResult
 from cloud_drift_analyzer.db.models import User
-from cloud_drift_analyzer.api.routes.auth import get_current_user_from_token
+from cloud_drift_analyzer.api.dependencies import get_current_user
 
 logger = get_logger(__name__)
 
@@ -21,7 +21,7 @@ router = APIRouter(
 @router.get("/")
 async def get_drift_analysis(
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),  # Add auth
+    current_user: User = Depends(get_current_user),  # Add auth
     environment: str = "production",
     since: datetime | None = None
 ):
@@ -64,7 +64,7 @@ async def get_drift_analysis(
 @router.post("/scan")
 async def start_drift_scan(
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),  # Add auth
+    current_user: User = Depends(get_current_user),  # Add auth
     environment: str = "production"
 ):
     """

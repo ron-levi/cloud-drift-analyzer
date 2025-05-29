@@ -1,9 +1,16 @@
 from datetime import datetime, timedelta, timezone
 import jwt
 from passlib.context import CryptContext
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 import os
 import uuid
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from cloud_drift_analyzer.db.models import User
 
 from cloud_drift_analyzer.core.logging import get_logger
 
@@ -17,6 +24,9 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
@@ -83,3 +93,87 @@ def verify_token(token: str, token_type: str = "access") -> dict:
         raise jwt.InvalidTokenError(f"Invalid token type. Expected {token_type}")
         
     return payload
+
+
+async def get_current_user_from_token(
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(lambda: __import__('cloud_drift_analyzer.db.database', fromlist=['get_session']).get_session())
+) -> "User":
+    """Dependency to get current authenticated user."""
+    from cloud_drift_analyzer.db.models import User
+    
+    try:
+        # Verify token
+        payload = verify_token(token)
+        username = payload.get("sub")
+        
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Get user details
+        stmt = select(User).where(User.username == username)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+            
+        return user
+        
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+async def get_current_user_from_token(
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = None
+) -> "User":
+    """Dependency to get current authenticated user."""
+    from cloud_drift_analyzer.db.database import get_session
+    from cloud_drift_analyzer.db.models import User
+    
+    if session is None:
+        # This will be handled by FastAPI dependency injection
+        raise ValueError("Session dependency required")
+    
+    try:
+        # Verify token
+        payload = verify_token(token)
+        username = payload.get("sub")
+        
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Get user details
+        stmt = select(User).where(User.username == username)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+            
+        return user
+        
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

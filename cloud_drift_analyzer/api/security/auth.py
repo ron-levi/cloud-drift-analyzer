@@ -99,7 +99,7 @@ async def get_current_user_from_token(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(lambda: __import__('cloud_drift_analyzer.db.database', fromlist=['get_session']).get_session())
 ) -> "User":
-    """Dependency to get current authenticated user."""
+    """Dependency to get the current authenticated user."""
     from cloud_drift_analyzer.db.models import User
     
     try:
@@ -134,46 +134,3 @@ async def get_current_user_from_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-async def get_current_user_from_token(
-    token: str = Depends(oauth2_scheme),
-    session: AsyncSession = None
-) -> "User":
-    """Dependency to get current authenticated user."""
-    from cloud_drift_analyzer.db.database import get_session
-    from cloud_drift_analyzer.db.models import User
-    
-    if session is None:
-        # This will be handled by FastAPI dependency injection
-        raise ValueError("Session dependency required")
-    
-    try:
-        # Verify token
-        payload = verify_token(token)
-        username = payload.get("sub")
-        
-        if not username:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        
-        # Get user details
-        stmt = select(User).where(User.username == username)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-            
-        return user
-        
-    except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )

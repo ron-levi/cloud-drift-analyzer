@@ -1,12 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy impo@router.post("/change-password")
-async def change_password(
-    password_data: PasswordChange,
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
-):ect
+from sqlalchemy import select
 from datetime import datetime, timedelta, timezone
 import jwt
 
